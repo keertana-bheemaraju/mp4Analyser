@@ -2,7 +2,7 @@ package com.castlabs.mp4Analyzer.services;
 
 import com.castlabs.mp4Analyzer.model.Box;
 import com.castlabs.mp4Analyzer.model.ErrorResponse;
-import com.fasterxml.jackson.core.JsonProcessingException;
+import com.castlabs.mp4Analyzer.model.StackEntry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
@@ -11,52 +11,134 @@ import java.io.IOException;
 import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Stack;
 
 @Service
 public class Mp4Service {
 
     private ObjectMapper om = new ObjectMapper();
 
-    public String analyzeMp4(String mp4Url) throws JsonProcessingException {
+    // Sub boxes are pushed to box at top od the stack
+    private Stack<StackEntry> stack = new Stack<>();
 
-        //todo url decode the url param?
-        if(mp4Url == null || mp4Url.equals("")) {
+    private static final String FILETYPE_BOX = "fileTypeBox";
+
+    private static final String TERMIMAL_BOX = "terminalBox";
+
+    // Create the top most container that holds all other boxes
+    private Box MP4_FILE = new Box(FILETYPE_BOX, 0, new ArrayList<>());
+
+    private int totalBytesProcessed;
+
+    private BufferedInputStream in;
+
+    private List<String> nestableBoxTypes = Arrays.asList("moof", "traf");
+
+    public String analyzeMp4(String mp4Url) throws IOException {
+
+        if (mp4Url == null || mp4Url.equals("")) {
             return om.writeValueAsString(new ErrorResponse("empty url"));
         }
-        System.out.println(mp4Url);
 
-        parseMp4File(mp4Url);
+        in = new BufferedInputStream(new URL(mp4Url).openStream());
 
-        return null;
+        Box firstBox = getNextBox();
+
+        if(firstBox.getType().equals(TERMIMAL_BOX)) {
+            return om.writeValueAsString(new ErrorResponse("file is empty"));
+        }
+
+        stack.push(new StackEntry(MP4_FILE, 0));
+
+        processBox(firstBox);
+
+        return om.writeValueAsString(MP4_FILE.getSubBoxes());
+    }
+
+    private void processBox(Box currentBox) throws IOException {
+
+        //System.out.println(om.writeValueAsString(MP4_FILE.getSubBoxes()));
+
+        if (currentBox.getType().equals(TERMIMAL_BOX)) {
+            return;
+        }
+
+        adjustTopOfStack();
+
+        stack.peek()
+                .getBox()
+                .getSubBoxes()
+                .add(currentBox);
+
+        if (nestableBoxTypes.contains(currentBox.getType())) {
+
+            stack.push(new StackEntry(currentBox, totalBytesProcessed + currentBox.getSize() - 8));
+
+            processBox(getNextBox());
+
+        } else {
+            Box nextBox = skipPayload(currentBox);
+
+            processBox(nextBox);
+        }
     }
 
     /**
-     * Create top level boxes from an MP4 URL
-     * @param mp4Url
+     * Ensure in progress nestable box is at the top of stack
      */
-    private void parseMp4File(String mp4Url) {
-        try (BufferedInputStream in = new BufferedInputStream(new URL(mp4Url).openStream())) {
-            byte [] dataBuffer= new byte[8];
-            int bytesRead;
-            int totalBytesRead = 0;
-
-            while ((bytesRead = in.read(dataBuffer, 0, 8)) != -1) {
-                totalBytesRead = totalBytesRead + bytesRead;
-                Box currentBox = buildBox(dataBuffer);
-                skipToNextBox(in, currentBox);
-                totalBytesRead = totalBytesRead + currentBox.getSize() - bytesRead;
-                System.out.println("tot-bytes-read: " + totalBytesRead);
+    private void adjustTopOfStack() {
+        while (!stack.peek().getBox().getType().equals(FILETYPE_BOX)) {
+            if (stack.peek().getEndByte() <= totalBytesProcessed) {
+                stack.pop();
+            } else {
+                break;
             }
-
-        } catch (IOException e) {
-            e.printStackTrace();
         }
     }
 
+    /**
+     * Get next box if one exists
+     * @return
+     * @throws IOException
+     */
+    private Box getNextBox() throws IOException {
 
+        byte[] buffer = new byte[8];
+
+        if (in.read(buffer, 0, 8) != -1) {
+
+            totalBytesProcessed += 8;
+
+            return buildBox(buffer);
+        }
+
+        return new Box(TERMIMAL_BOX, 0);
+    }
+
+    /**
+     * Skip payload and return next box if one exists
+     *
+     * @param currentBox
+     * @throws IOException
+     */
+    private Box skipPayload(Box currentBox) throws IOException {
+
+        if (in.read(new byte[currentBox.getSize()], 0, currentBox.getSize() - 8) == -1) {
+            totalBytesProcessed += currentBox.getSize() - 8;
+            return new Box(TERMIMAL_BOX, 0);
+        }
+
+        totalBytesProcessed += currentBox.getSize() - 8;
+
+        return getNextBox();
+    }
 
     /**
      * Build a box object from box header data
+     *
      * @param headerBuffer header data
      * @return
      */
@@ -69,24 +151,16 @@ public class Mp4Service {
         for (byte b : boxPropertyBuffer) {
             boxSize = (boxSize << 8) + (b & 0xFF);
         }
-        System.out.println(boxSize);
+        // System.out.println(boxSize);
 
         System.arraycopy(headerBuffer, 4, boxPropertyBuffer, 0, boxPropertyBuffer.length);
         String boxType = new String(boxPropertyBuffer, charset);
-        System.out.println(boxType);
+        //System.out.println(boxType);
+
+        if (nestableBoxTypes.contains(boxType)) {
+            return new Box(boxType, boxSize, new ArrayList<>());
+        }
 
         return new Box(boxType, boxSize);
     }
-
-    /**
-     * Skip to next box
-     * @param in
-     * @param currentBox
-     * @throws IOException
-     */
-    private void skipToNextBox(BufferedInputStream in, Box currentBox) throws IOException{
-        in.read(new byte[currentBox.getSize()], 0, currentBox.getSize() - 8);
-    }
-
-
 }
