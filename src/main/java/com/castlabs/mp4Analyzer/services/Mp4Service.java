@@ -1,93 +1,72 @@
 package com.castlabs.mp4Analyzer.services;
 
-import com.castlabs.mp4Analyzer.helpers.BoxHelper;
+import com.castlabs.mp4Analyzer.helpers.Mp4Helper;
 import com.castlabs.mp4Analyzer.model.Box;
 import com.castlabs.mp4Analyzer.model.ErrorResponse;
 import com.castlabs.mp4Analyzer.model.StackEntry;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.io.BufferedInputStream;
 import java.io.IOException;
-import java.net.URL;
 import java.util.ArrayList;
-import java.util.Stack;
 
 @Service
 public class Mp4Service {
 
     private ObjectMapper om = new ObjectMapper();
 
-    @Autowired
-    private BoxHelper boxHelper;
+    public String analyzeMp4(String mp4Url)  {
 
-    public String analyzeMp4(String mp4Url) throws IOException {
 
-        // Sub boxes are pushed to box at top od the stack
-        Stack<StackEntry> stack = new Stack<>();
+        try {
+            if (mp4Url == null || mp4Url.equals("")) {
+                return om.writeValueAsString(new ErrorResponse("empty url"));
+            }
 
-        BufferedInputStream in;
+            Mp4Helper mp4Helper = new Mp4Helper(mp4Url);
 
-        if (mp4Url == null || mp4Url.equals("")) {
-            return om.writeValueAsString(new ErrorResponse("empty url"));
+            Box firstBox = mp4Helper.getNextBox();
+
+            if (firstBox.getType().equals(Mp4Helper.TERMINAL_BOX.getType())) {
+                return om.writeValueAsString(new ErrorResponse("file is empty"));
+            }
+
+            Box container = new Box(Mp4Helper.CONTAINER, 0, new ArrayList<>());
+
+            mp4Helper.getStack().push(new StackEntry(container, 0));
+
+            processBox(firstBox, mp4Helper);
+
+            return getMachineReadable(container);
+        } catch (IOException e) {
+            return e.toString();
         }
-
-        in = new BufferedInputStream(new URL(mp4Url).openStream());
-
-        Box firstBox = boxHelper.getNextBox(in);
-
-        if(firstBox.getType().equals(BoxHelper.TERMINAL_BOX.getType())) {
-            return om.writeValueAsString(new ErrorResponse("file is empty"));
-        }
-
-        Box container = new Box(BoxHelper.MP4_FILE_BOX, 0, new ArrayList<>());
-
-        stack.push(new StackEntry(container, 0));
-
-        processBox(firstBox, stack, in);
-
-        return om.writeValueAsString(container.getSubBoxes());
     }
 
-    private void processBox(Box currentBox, Stack<StackEntry> stack, BufferedInputStream in) throws IOException {
+    private void processBox(Box currentBox, Mp4Helper mp4Helper) throws IOException {
 
-        //System.out.println(om.writeValueAsString(MP4_FILE.getSubBoxes()));
-
-        if (currentBox.getType().equals(BoxHelper.TERMINAL_BOX.getType())) {
+        if (currentBox.getType().equals(Mp4Helper.TERMINAL_BOX.getType())) {
             return;
         }
 
-        adjustTopOfStack(stack, in);
+        // place this box where it belongs in the container
+        mp4Helper.placeBox(currentBox);
 
-        stack.peek()
-                .getBox()
-                .getSubBoxes()
-                .add(currentBox);
+        if (Mp4Helper.NESTABLE_BOX_TYPES.contains(currentBox.getType())) {
 
-        if (BoxHelper.NESTABLE_BOX_TYPES.contains(currentBox.getType())) {
+            mp4Helper.pushBoxToStack(currentBox);
 
-            stack.push(new StackEntry(currentBox, boxHelper.getTotalBytesProcessed(in) + currentBox.getSize() - 8));
-
-            processBox(boxHelper.getNextBox(in), stack, in);
+            processBox(mp4Helper.getNextBox(), mp4Helper);
 
         } else {
-            Box nextBox = boxHelper.skipPayload(in, currentBox);
+            Box nextBox = mp4Helper.skipPayload(currentBox);
 
-            processBox(nextBox, stack, in);
+            processBox(nextBox, mp4Helper);
         }
     }
 
-    /**
-     * Ensure in progress nestable box is at the top of stack
-     */
-    private void adjustTopOfStack(Stack<StackEntry> stack, BufferedInputStream in) {
-        while (!stack.peek().getBox().getType().equals(BoxHelper.MP4_FILE_BOX)) {
-            if (stack.peek().getEndByte() <= boxHelper.getTotalBytesProcessed(in)) {
-                stack.pop();
-            } else {
-                break;
-            }
-        }
+    private String getMachineReadable(Box container) throws JsonProcessingException {
+        return om.writeValueAsString(container.getSubBoxes());
     }
 }
