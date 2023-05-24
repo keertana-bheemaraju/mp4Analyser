@@ -42,7 +42,7 @@ public class Mp4Helper {
 
         if (inputStream.read(buffer, 0, 8) != -1) {
 
-            increaseBytesProcessed(inputStream, 8);
+            increaseBytesProcessed(8);
 
             return buildBox(buffer);
         }
@@ -59,11 +59,11 @@ public class Mp4Helper {
     public Box skipPayload(Box currentBox) throws IOException {
 
         if (inputStream.read(new byte[currentBox.getSize()], 0, currentBox.getSize() - 8) == -1) {
-            increaseBytesProcessed(inputStream, currentBox.getSize() - 8);
+            increaseBytesProcessed(currentBox.getSize() - 8);
             return TERMINAL_BOX;
         }
 
-        increaseBytesProcessed(inputStream, currentBox.getSize() - 8);
+        increaseBytesProcessed(currentBox.getSize() - 8);
 
         return getNextBox();
     }
@@ -122,7 +122,7 @@ public class Mp4Helper {
         return totalBytesProcessed;
     }
 
-    private void increaseBytesProcessed(BufferedInputStream in, int bytesProcessed) {
+    private void increaseBytesProcessed(int bytesProcessed) {
         totalBytesProcessed += bytesProcessed;
     }
 
@@ -130,15 +130,4 @@ public class Mp4Helper {
         return stack;
     }
 
-    public void setStack(Stack<StackEntry> stack) {
-        this.stack = stack;
-    }
-
-    public BufferedInputStream getInputStream() {
-        return inputStream;
-    }
-
-    public void setInputStream(BufferedInputStream inputStream) {
-        this.inputStream = inputStream;
-    }
 }
